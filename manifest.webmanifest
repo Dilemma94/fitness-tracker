@@ -1,0 +1,19 @@
+{
+  "name": "Pulse · Fitness Tracker",
+  "short_name": "Pulse",
+  "description": "A private, offline-first gym & fitness tracker. All your data stays on your device.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#6457f6",
+  "icons": [
+    {
+      "src": "assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
