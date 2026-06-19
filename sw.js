@@ -1,7 +1,7 @@
 /* sw.js — minimal offline cache for the app shell.
    Cache-first for the static files so the app opens with no network.
    Bump CACHE when you change the static files to force an update. */
-const CACHE = 'pulse-v1';
+const CACHE = 'pulse-v2';
 const SHELL = [
   './',
   './index.html',
