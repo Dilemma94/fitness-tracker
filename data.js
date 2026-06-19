@@ -145,6 +145,7 @@
         weeklyTarget: 3,          // planned workouts per week (Day 4 optional)
         startDate: FT.todayISO(), // baseline for the 4-week photo reminder
         photoReminderDismissed: null,
+        gdrive: { clientId: '', fileId: '', enabled: false, lastSync: null },
       },
       templates: seedTemplates(),
       workouts: [],     // gym sessions  { id, date, type, name, duration, notes, exercises[] }
@@ -166,7 +167,9 @@
     const base = FT.defaultState();
     if (!loaded || typeof loaded !== 'object') return base;
     const out = Object.assign(base, loaded);
-    out.settings = Object.assign(base.settings, loaded.settings || {});
+    const ls = loaded.settings || {};
+    out.settings = Object.assign(base.settings, ls);
+    out.settings.gdrive = Object.assign({ clientId: '', fileId: '', enabled: false, lastSync: null }, ls.gdrive || {});
     // If the user never edited templates, keep the seeded defaults.
     out.templates = loaded.templates && Object.keys(loaded.templates).length
       ? loaded.templates : base.templates;

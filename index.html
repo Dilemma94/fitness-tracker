@@ -57,6 +57,8 @@
   <div id="toast-root" aria-live="polite"></div>
 
   <!-- Scripts: data layer first, then app -->
+  <!-- Google Identity Services for Google Drive sync (loads async, safe if offline) -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="data.js"></script>
   <script src="app.js"></script>
 </body>

@@ -39,7 +39,137 @@
   const viewEl = $('#view');
   const modalRoot = $('#modal-root');
 
-  function save() { FT.Store.save(App.state); }
+  function save() { FT.Store.save(App.state); GDrive.scheduleSilentSync(); }
+
+  /* ---- Google Drive sync ------------------------------------------------- */
+  const GDrive = (function () {
+    let _token = null;
+    let _client = null;
+    let _syncTimer = null;
+    let _onToken = null; // callback to run after auth
+
+    function cfg() { return App.state.settings.gdrive || {}; }
+    function isEnabled() { return !!(cfg().enabled && cfg().clientId); }
+
+    function _initClient(onToken) {
+      if (typeof google === 'undefined' || !google.accounts) return false;
+      _onToken = onToken;
+      _client = google.accounts.oauth2.initTokenClient({
+        client_id: cfg().clientId,
+        scope: 'https://www.googleapis.com/auth/drive.file',
+        callback: (resp) => {
+          if (resp.error) { toast('Google Drive: ' + resp.error, 'err'); return; }
+          _token = resp.access_token;
+          if (_onToken) { const fn = _onToken; _onToken = null; fn(); }
+        },
+      });
+      return true;
+    }
+
+    async function _doSync(silent) {
+      if (!_token) return;
+      try {
+        const backup = await FT.Store.export(App.state);
+        const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
+        let id = cfg().fileId;
+
+        if (id) {
+          const r = await fetch(
+            'https://www.googleapis.com/upload/drive/v3/files/' + id + '?uploadType=media',
+            { method: 'PATCH', headers: { Authorization: 'Bearer ' + _token, 'Content-Type': 'application/json' }, body: blob }
+          );
+          if (r.status === 401) { _token = null; return; }
+          if (!r.ok) throw new Error(r.status);
+        } else {
+          const form = new FormData();
+          form.append('metadata', new Blob([JSON.stringify({ name: 'pulse-fitness-backup.json' })], { type: 'application/json' }));
+          form.append('file', blob);
+          const r = await fetch(
+            'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+            { method: 'POST', headers: { Authorization: 'Bearer ' + _token }, body: form }
+          );
+          if (!r.ok) throw new Error(r.status);
+          App.state.settings.gdrive.fileId = (await r.json()).id;
+          FT.Store.save(App.state);
+        }
+        App.state.settings.gdrive.lastSync = new Date().toISOString();
+        FT.Store.save(App.state);
+        if (!silent) toast('Synced to Google Drive ☁️');
+        if (App.view === 'settings') renderSettings();
+      } catch (err) {
+        console.error('GDrive sync:', err);
+        if (!silent) toast('Drive sync failed', 'err');
+      }
+    }
+
+    async function _doRestore() {
+      if (!_token) return;
+      const id = cfg().fileId;
+      if (!id) { toast('No backup on Drive yet — sync first', 'err'); return; }
+      if (!confirm('Replace ALL current data with the Google Drive backup? This cannot be undone.')) return;
+      try {
+        const r = await fetch('https://www.googleapis.com/drive/v3/files/' + id + '?alt=media', {
+          headers: { Authorization: 'Bearer ' + _token },
+        });
+        if (!r.ok) throw new Error(r.status);
+        const backup = await r.json();
+        const state = await FT.Store.import(backup);
+        Object.assign(App.state, state);
+        toast('Restored from Google Drive ☁️');
+        render();
+      } catch (err) {
+        console.error('GDrive restore:', err);
+        toast('Restore failed', 'err');
+      }
+    }
+
+    // Debounced silent sync — called after every save().
+    function scheduleSilentSync() {
+      if (!isEnabled()) return;
+      clearTimeout(_syncTimer);
+      _syncTimer = setTimeout(() => {
+        if (_token) { _doSync(true); return; }
+        if (!_initClient(() => _doSync(true))) return;
+        _client.requestAccessToken({ prompt: '' }); // silent, won't open popup
+      }, 4000);
+    }
+
+    function connect() {
+      const cid = cfg().clientId;
+      if (!cid) { toast('Enter your Client ID first', 'err'); return; }
+      if (!_initClient(() => {
+        App.state.settings.gdrive.enabled = true;
+        FT.Store.save(App.state);
+        _doSync(false);
+        renderSettings();
+      })) { toast('Google script not loaded yet, retry in a moment', 'err'); return; }
+      _client.requestAccessToken({ prompt: 'consent' });
+    }
+
+    function syncNow() {
+      if (!isEnabled()) { toast('Connect Google Drive first', 'err'); return; }
+      if (_token) { _doSync(false); return; }
+      if (!_initClient(() => _doSync(false))) { toast('Google script not loaded', 'err'); return; }
+      _client.requestAccessToken({ prompt: '' });
+    }
+
+    function restore() {
+      if (!isEnabled()) { toast('Connect Google Drive first', 'err'); return; }
+      if (_token) { _doRestore(); return; }
+      if (!_initClient(() => _doRestore())) { toast('Google script not loaded', 'err'); return; }
+      _client.requestAccessToken({ prompt: '' });
+    }
+
+    function disconnect() {
+      _token = null; _client = null; clearTimeout(_syncTimer);
+      Object.assign(App.state.settings.gdrive, { enabled: false, fileId: '', lastSync: null });
+      FT.Store.save(App.state);
+      toast('Google Drive disconnected');
+      renderSettings();
+    }
+
+    return { scheduleSilentSync, connect, syncNow, restore, disconnect, isEnabled };
+  })();
 
   // Escape user-provided text before injecting into innerHTML.
   function esc(s) {
@@ -276,6 +406,7 @@
     info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.01"/></svg>',
     flame: '<svg viewBox="0 0 24 24"><path d="M12 3s5 4 5 9a5 5 0 0 1-10 0c0-1.5.5-2.5 1-3 .2 1 .8 1.5 1.5 1.5C9 9 9 6 12 3z"/></svg>',
     calendar: '<svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="16" rx="2.5"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>',
+    cloud: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>',
   };
 
   /* ---- Exercise demo images ----------------------------------------------
@@ -642,6 +773,43 @@
         <button class="row" data-action="reset-templates"><div class="row-ic">${I.dumbbell}</div>
           <div class="row-main"><div class="row-title">Reset Templates</div><div class="row-sub">Restore the default workout plan</div></div>${chev()}</button>
       </div>
+
+      <div class="section-label">Cloud Backup</div>
+      ${(function () {
+        const gd = s.gdrive || {};
+        if (gd.enabled) {
+          const lastSyncText = gd.lastSync ? (() => {
+            const diff = Date.now() - new Date(gd.lastSync).getTime();
+            if (diff < 60000) return 'Just now';
+            if (diff < 3600000) return Math.floor(diff / 60000) + ' min ago';
+            const d = new Date(gd.lastSync);
+            return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' at ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          })() : 'Never synced';
+          return `<div class="card">
+            <div class="row" style="border:none;padding:4px 0 12px 0;">
+              <div class="row-ic" style="background:#e8f5e9;color:#2e7d32">${I.cloud}</div>
+              <div class="row-main"><div class="row-title">Google Drive</div>
+              <div class="row-sub">Last sync: ${esc(lastSyncText)}</div></div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn" style="flex:1;min-width:100px;" data-action="gdrive-sync-now">Sync Now</button>
+              <button class="btn-outline" style="flex:1;min-width:100px;" data-action="gdrive-restore">Restore from Drive</button>
+              <button class="btn-outline" style="flex:1;min-width:100px;color:var(--danger);" data-action="gdrive-disconnect">Disconnect</button>
+            </div>
+          </div>`;
+        }
+        return `<div class="card">
+          <div class="field">
+            <label>Google Client ID</label>
+            <input class="input" id="gdrive-cid" type="text" inputmode="url" autocomplete="off" spellcheck="false"
+              placeholder="123456789-abc…apps.googleusercontent.com"
+              value="${esc(gd.clientId || '')}">
+            <div class="hint">One-time setup. Get it from <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Google Cloud Console ↗</a> → Create credentials → OAuth 2.0 Client ID (Web app). Then add your GitHub Pages URL as an Authorized JavaScript origin.</div>
+          </div>
+          <button class="btn" style="width:100%;margin-top:8px;" data-action="gdrive-connect">Connect Google Drive</button>
+          <p class="hint" style="text-align:center;margin-top:8px;">Auto-syncs after every save · your data stays in your own Google account</p>
+        </div>`;
+      })()}
 
       <div class="section-label">Storage</div>
       <div class="card tight"><div class="row" style="border:none;padding:6px 2px;">
@@ -1236,6 +1404,20 @@
       if (!confirm('Restore the default workout plan? Your custom template edits will be lost (logged workouts are kept).')) return;
       App.state.templates = FT.defaultState().templates; save(); toast('Templates reset'); render();
     },
+    // google drive
+    'gdrive-connect': () => {
+      const inp = document.getElementById('gdrive-cid');
+      const cid = inp ? inp.value.trim() : '';
+      if (!cid) { toast('Enter your Client ID first', 'err'); return; }
+      if (!App.state.settings.gdrive) App.state.settings.gdrive = {};
+      App.state.settings.gdrive.clientId = cid;
+      FT.Store.save(App.state);
+      GDrive.connect();
+    },
+    'gdrive-sync-now': () => GDrive.syncNow(),
+    'gdrive-restore': () => GDrive.restore(),
+    'gdrive-disconnect': () => GDrive.disconnect(),
+
     'clear-data': async () => {
       if (!confirm('This permanently erases ALL data on this device. Export a backup first if unsure. Continue?')) return;
       if (!confirm('Are you absolutely sure? This cannot be undone.')) return;
@@ -1323,6 +1505,10 @@
     applyTheme();
     render();
     registerSW();
+    // Silent Drive sync on startup if previously connected.
+    if (App.state.settings.gdrive && App.state.settings.gdrive.enabled) {
+      setTimeout(() => GDrive.scheduleSilentSync(), 3000);
+    }
     // React to OS theme changes while in auto mode.
     if (window.matchMedia) {
       window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
